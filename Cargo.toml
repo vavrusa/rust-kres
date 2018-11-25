@@ -16,13 +16,13 @@ readme = "README.md"
 
 [dependencies]
 libc = "0.2.43"
-socket2 = "*"
-bytes = "*"
-jemallocator = {version = "*", optional = true}
+socket2 = "0.3.8"
+bytes = "0.4"
+jemallocator = {version = "0.1", optional = true}
 parking_lot = {version = "0.6", features = ["nightly"]}
 
 [dev-dependencies]
-dnssector = {git = "https://github.com/vavrusa/dnssector"}
+dnssector = {version = "0.1.2", path = "crates/dnssector"}
 
 [build-dependencies]
 bindgen = "0.43.1"

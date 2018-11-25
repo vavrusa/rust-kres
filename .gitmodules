@@ -1,3 +1,6 @@
 [submodule "src/knot-resolver"]
 	path = src/knot-resolver
 	url = https://github.com/cz-nic/knot-resolver
+[submodule "crates/dnssector"]
+	path = crates/dnssector
+	url = https://github.com/jedisct1/dnssector.git
