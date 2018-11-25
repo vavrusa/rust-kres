@@ -1,0 +1,3 @@
+[submodule "src/knot-resolver"]
+	path = src/knot-resolver
+	url = https://github.com/cz-nic/knot-resolver

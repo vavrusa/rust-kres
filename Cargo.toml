@@ -1,0 +1,38 @@
+[package]
+name = "kres"
+version = "0.1.0"
+authors = ["Marek Vavrusa <mvavrusa@cloudflare.com>"]
+links = "kres"
+build = "build.rs"
+license = "MIT/Apache-2.0"
+repository = "https://github.com/vavrusa/rust-kres"
+documentation = "https://docs.rs/kres"
+description = """
+Bindings to the Knot Resolver library (also known as libkres)
+"""
+categories = ["external-ffi-bindings"]
+edition = "2018"
+readme = "README.md"
+
+[dependencies]
+libc = "0.2.43"
+socket2 = "*"
+bytes = "*"
+jemallocator = {version = "*", optional = true}
+parking_lot = {version = "0.6", features = ["nightly"]}
+
+[dev-dependencies]
+dnssector = {git = "https://github.com/vavrusa/dnssector"}
+
+[build-dependencies]
+bindgen = "0.43.1"
+pkg-config = "0.3"
+cc = "1.0.25"
+
+[features]
+static = []
+jemalloc = ["jemallocator"]
+default = []
+
+[profile.release]
+debug = true
