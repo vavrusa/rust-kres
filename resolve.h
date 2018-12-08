@@ -24,6 +24,7 @@ int lkr_module_unload(struct lkr_context *ctx, const char *name);
 int lkr_cache_open(struct lkr_context *ctx, const char *path, size_t max_bytes);
 int lkr_root_hint(struct lkr_context *ctx, const uint8_t *data, size_t len);
 int lkr_trust_anchor(struct lkr_context *ctx, const uint8_t *data, size_t len);
+void lkr_verbose(struct lkr_context *ctx, bool val);
 
 struct lkr_request *lkr_request_new(struct lkr_context *ctx);
 void lkr_request_free(struct lkr_request *req);

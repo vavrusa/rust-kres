@@ -55,13 +55,13 @@ use jemallocator;
 static ALLOC: jemallocator::Jemalloc = jemallocator::Jemalloc;
 
 use bytes::Bytes;
+use parking_lot::{Mutex, MutexGuard};
 use std::ffi::{CStr, CString};
 use std::io::{Error, ErrorKind, Result};
 use std::mem;
 use std::net::{IpAddr, SocketAddr};
 use std::ptr;
 use std::sync::Arc;
-use parking_lot::{Mutex, MutexGuard};
 
 // Wrapped C library
 mod c {
@@ -106,7 +106,9 @@ impl Context {
             match c::lkr_cache_open(inner, path_c.as_ptr(), max_bytes) {
                 0 => {
                     c::lkr_module_load(inner, cache_c.as_ptr());
-                    Ok(Arc::new(Self { inner: Mutex::new(inner) }))
+                    Ok(Arc::new(Self {
+                        inner: Mutex::new(inner),
+                    }))
                 }
                 _ => Err(Error::new(ErrorKind::Other, "failed to open cache")),
             }
@@ -149,7 +151,10 @@ impl Context {
         unsafe {
             let res = c::lkr_root_hint(*inner, slice.as_ptr(), slice.len());
             if res != 0 {
-                return Err(Error::new(ErrorKind::InvalidInput, "failed to add a root hint"));
+                return Err(Error::new(
+                    ErrorKind::InvalidInput,
+                    "failed to add a root hint",
+                ));
             }
         }
         Ok(())
@@ -161,10 +166,21 @@ impl Context {
         unsafe {
             let res = c::lkr_trust_anchor(*inner, rdata.as_ptr(), rdata.len());
             if res != 0 {
-                return Err(Error::new(ErrorKind::InvalidInput, "failed to add trust anchor"));
+                return Err(Error::new(
+                    ErrorKind::InvalidInput,
+                    "failed to add trust anchor",
+                ));
             }
         }
         Ok(())
+    }
+
+    /// Set or reset verbose mode
+    pub fn set_verbose(&self, val: bool) {
+        let inner = self.locked();
+        unsafe {
+            c::lkr_verbose(*inner, val);
+        }
     }
 
     fn locked(&self) -> MutexGuard<*mut c::lkr_context> {
@@ -201,7 +217,10 @@ impl Request {
     pub fn new(context: Arc<Context>) -> Self {
         unsafe {
             let inner = c::lkr_request_new(*context.locked());
-            Self { context, inner: Mutex::new(inner) }
+            Self {
+                context,
+                inner: Mutex::new(inner),
+            }
         }
     }
 
@@ -209,14 +228,7 @@ impl Request {
     pub fn consume(&self, msg: &[u8], from: SocketAddr) -> State {
         let (_, inner) = self.locked();
         let from = socket2::SockAddr::from(from);
-        unsafe {
-            c::lkr_consume(
-                *inner,
-                from.as_ptr() as *const _,
-                msg.as_ptr(),
-                msg.len(),
-            )
-        }
+        unsafe { c::lkr_consume(*inner, from.as_ptr() as *const _, msg.as_ptr(), msg.len()) }
     }
 
     /// Generate an outbound query for the request. This should be called when `consume()` returns a `Produce` state.
@@ -236,7 +248,7 @@ impl Request {
                 while state == State::PRODUCE {
                     ctr = ctr + 1;
                     if ctr == 8 {
-                        break
+                        break;
                     }
                     size = buf.capacity();
                     state = c::lkr_produce(
@@ -268,7 +280,6 @@ impl Request {
                         } else {
                             addresses.push(addr.as_inet6().unwrap().into());
                         }
-                        
                     }
 
                     Some((Bytes::from(&msg[..size]), addresses))
@@ -294,7 +305,12 @@ impl Request {
         Ok(Bytes::from(v))
     }
 
-    fn locked(&self) -> (MutexGuard<*mut c::lkr_context>, MutexGuard<*mut c::lkr_request>) {
+    fn locked(
+        &self,
+    ) -> (
+        MutexGuard<*mut c::lkr_context>,
+        MutexGuard<*mut c::lkr_request>,
+    ) {
         (self.context.locked(), self.inner.lock())
     }
 }
@@ -350,8 +366,18 @@ mod tests {
     #[test]
     fn context_trust_anchor() {
         let context = Context::new();
-        let ta = gen::RR::from_string(". 0 IN DS 20326 8 2 E06D44B80B8F1D39A95C0B0D7C65D08458E880409BBC683457104237C7F8EC8D").unwrap();
+        let ta = gen::RR::from_string(
+            ". 0 IN DS 20326 8 2 E06D44B80B8F1D39A95C0B0D7C65D08458E880409BBC683457104237C7F8EC8D",
+        )
+        .unwrap();
         assert!(context.add_trust_anchor(ta.rdata()).is_ok());
+    }
+
+    #[test]
+    fn context_verbose() {
+        let context = Context::new();
+        context.set_verbose(true);
+        context.set_verbose(false);
     }
 
     #[test]
@@ -380,11 +406,13 @@ mod tests {
                 resp.insert_rr(
                     Section::Answer,
                     gen::RR::from_string(". 86399 IN NS e.root-servers.net").unwrap(),
-                ).unwrap();
+                )
+                .unwrap();
                 resp.insert_rr(
                     Section::Additional,
                     gen::RR::from_string("e.root-servers.net 86399 IN A 192.203.230.10").unwrap(),
-                ).unwrap();
+                )
+                .unwrap();
 
                 // Consume the mock answer and expect resolution to be done
                 request.consume(resp.packet(), addresses[0])

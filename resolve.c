@@ -65,6 +65,13 @@ int lkr_trust_anchor(struct lkr_context *ctx, const uint8_t *data, size_t len)
 	return kr_ta_add(&ctx->resolver.trust_anchors, (const knot_dname_t *)"", KNOT_RRTYPE_DS, 172800, data, len);
 }
 
+void lkr_verbose(struct lkr_context *ctx, bool val)
+{
+	if (ctx != NULL) {
+		kr_verbose_set(val);
+	}
+}
+
 struct lkr_context *lkr_context_new()
 {
 	knot_mm_t pool = {
