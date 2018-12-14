@@ -166,6 +166,13 @@ enum lkr_state lkr_consume(struct lkr_request *req, const struct sockaddr *addr,
 	if (ret != 0) {
 		return FAIL;
 	}
+
+	/* Don't strictly match MSGID to allow cached answers */
+	struct kr_query *query = kr_rplan_last(&req->req.rplan);
+	if (query) {
+		query->id = knot_wire_get_id(packet->wire);
+	}
+
 	return (enum lkr_state) kr_resolve_consume(&req->req, addr, packet);
 }
 
