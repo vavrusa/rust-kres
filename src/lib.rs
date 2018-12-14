@@ -63,6 +63,9 @@ use std::net::{IpAddr, SocketAddr};
 use std::ptr;
 use std::sync::Arc;
 
+/// Number of tries to produce a next message
+const MAX_PRODUCE_TRIES : usize = 3;
+
 // Wrapped C library
 mod c {
     #![allow(non_snake_case, non_camel_case_types, non_upper_case_globals)]
@@ -215,84 +218,101 @@ unsafe impl Sync for Request {}
 impl Request {
     /// Create a new request under the context. The request is bound to the context for its lifetime.
     pub fn new(context: Arc<Context>) -> Self {
-        unsafe {
-            let inner = c::lkr_request_new(*context.locked());
-            Self {
-                context,
-                inner: Mutex::new(inner),
-            }
+        let inner = unsafe { c::lkr_request_new(*context.locked()) };
+        Self {
+            context,
+            inner: Mutex::new(inner),
         }
     }
 
     /// Consume an input from the caller, this is typically either a client query or response to an outbound query.
     pub fn consume(&self, msg: &[u8], from: SocketAddr) -> State {
-        let (_, inner) = self.locked();
+        let (_context, inner) = self.locked();
         let from = socket2::SockAddr::from(from);
-        unsafe { c::lkr_consume(*inner, from.as_ptr() as *const _, msg.as_ptr(), msg.len()) }
+        let msg_ptr = if !msg.is_empty() { msg.as_ptr() } else { ptr::null() };
+        unsafe { c::lkr_consume(*inner, from.as_ptr() as *const _, msg_ptr, msg.len()) }
     }
 
     /// Generate an outbound query for the request. This should be called when `consume()` returns a `Produce` state.
     pub fn produce(&self) -> Option<(Bytes, Vec<SocketAddr>)> {
         let mut msg = vec![0; 512];
-        let mut size = 0;
         let mut addresses = Vec::new();
         let mut sa_vec: Vec<*mut c::sockaddr> = vec![ptr::null_mut(); 4];
-        let (_, inner) = self.locked();
+        let (_context, inner) = self.locked();
 
-        unsafe {
-            let state = {
-                let buf = &mut msg;
-                let sa_slice = &mut sa_vec;
-                let mut state = State::PRODUCE;
-                let mut ctr = 0;
-                while state == State::PRODUCE {
-                    ctr = ctr + 1;
-                    if ctr == 8 {
-                        break;
-                    }
-                    size = buf.capacity();
+        let state = {
+            let mut state = State::PRODUCE;
+            let mut tries = MAX_PRODUCE_TRIES;
+            while state == State::PRODUCE {
+                if tries == 0 {
+                    break;
+                }
+                tries -= 1;
+
+                // Prepare socket address vector
+                let addr_ptr = sa_vec.as_mut_ptr();
+                let addr_capacity = sa_vec.capacity();
+
+                // Prepare message buffer
+                let msg_capacity = msg.capacity();
+                let msg_ptr = msg.as_mut_ptr();
+                let mut msg_size = msg_capacity;
+
+                // Generate next message
+                unsafe {
+                    mem::forget(msg);
+                    mem::forget(sa_vec);
+
                     state = c::lkr_produce(
                         *inner,
-                        sa_slice.as_mut_ptr() as *mut _,
-                        sa_slice.len(),
-                        buf.as_mut_ptr() as *mut _,
-                        &mut size,
+                        addr_ptr,
+                        addr_capacity,
+                        msg_ptr,
+                        &mut msg_size,
                         false,
                     );
-                }
-                state
-            };
 
-            match state {
-                State::DONE => None,
-                State::CONSUME => {
-                    for ptr_addr in sa_vec {
-                        if ptr_addr.is_null() {
-                            break;
-                        }
-                        let addr = socket2::SockAddr::from_raw_parts(
+                    // Rebuild vectors from modified pointers
+                    msg = Vec::from_raw_parts(msg_ptr, msg_size, msg_capacity);
+                    sa_vec = Vec::from_raw_parts(addr_ptr, addr_capacity, addr_capacity);
+                }
+            }
+            state
+        };
+
+        match state {
+            State::DONE => None,
+            State::CONSUME => {
+                for ptr_addr in sa_vec {
+                    if ptr_addr.is_null() {
+                        break;
+                    }
+                    let addr = unsafe {
+                        socket2::SockAddr::from_raw_parts(
                             ptr_addr as *const _,
                             c::lkr_sockaddr_len(ptr_addr) as u32,
-                        );
-                        let as_inet = addr.as_inet();
-                        if !as_inet.is_none() {
-                            addresses.push(as_inet.unwrap().into());
-                        } else {
-                            addresses.push(addr.as_inet6().unwrap().into());
-                        }
+                        )
+                    };
+                    if let Some(as_inet) = addr.as_inet() {
+                        addresses.push(as_inet.into());
+                    } else {
+                        addresses.push(addr.as_inet6().unwrap().into());
                     }
-
-                    Some((Bytes::from(&msg[..size]), addresses))
                 }
-                _ => None,
+
+                Some((Bytes::from(msg), addresses))
             }
+            _ => None,
         }
     }
 
     /// Finish request processing and convert Request into the final answer.
     pub fn finish(self, state: State) -> Result<Bytes> {
-        let (_, inner) = self.locked();
+        let (_context, inner) = self.locked();
         let answer_len = unsafe { c::lkr_finish(*inner, state) };
+        if answer_len == 0 {
+            return Err(ErrorKind::UnexpectedEof.into())
+        }
 
         let mut v: Vec<u8> = Vec::with_capacity(answer_len);
         let p = v.as_mut_ptr();
@@ -317,10 +337,11 @@ impl Request {
 
 impl Drop for Request {
     fn drop(&mut self) {
-        let (_, inner) = self.locked();
+        let (_context, mut inner) = self.locked();
         if !inner.is_null() {
             unsafe {
                 c::lkr_request_free(*inner);
+                *inner = ptr::null_mut();
             }
         }
     }

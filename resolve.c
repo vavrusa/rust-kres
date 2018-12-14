@@ -151,6 +151,10 @@ struct lkr_request *lkr_request_new(struct lkr_context *ctx)
 	}
 
 	int ret = kr_resolve_begin(&req->req, &ctx->resolver, req->req.answer);
+
+	/* Make sure there's no open cache transaction as they can't span threads */
+	kr_cache_sync(&req->req.ctx->cache);
+
 	if (ret == KR_STATE_FAIL) {
 		lkr_request_free(req);
 		return NULL;
@@ -173,7 +177,12 @@ enum lkr_state lkr_consume(struct lkr_request *req, const struct sockaddr *addr,
 		query->id = knot_wire_get_id(packet->wire);
 	}
 
-	return (enum lkr_state) kr_resolve_consume(&req->req, addr, packet);
+	ret = kr_resolve_consume(&req->req, addr, packet);
+
+	/* Make sure there's no open cache transaction as they can't span threads */
+	kr_cache_sync(&req->req.ctx->cache);
+
+	return (enum lkr_state) ret;
 }
 
 enum lkr_state lkr_produce(struct lkr_request *req, struct sockaddr *addrs[], size_t addrs_len, uint8_t *data, size_t *len, _Bool is_stream)
@@ -185,12 +194,18 @@ enum lkr_state lkr_produce(struct lkr_request *req, struct sockaddr *addrs[], si
 
 	/* Convert linear array into the array of struct sockaddr pointers */
 	if (!addr_list) {
+		/* Make sure there's no open cache transaction as they can't span threads */
+		kr_cache_sync(&req->req.ctx->cache);
 		*len = packet->size;
 		return (enum lkr_state) res;
 	}
 
 	/* TODO: This will need to happen before each send when the destination address is known */
 	int ret = kr_resolve_checkout(&req->req, NULL, addr_list, sock_type, packet);
+
+	/* Make sure there's no open cache transaction as they can't span threads */
+	kr_cache_sync(&req->req.ctx->cache);
+
 	if (ret != 0) {
 		*len = packet->size;
 		return FAIL;
@@ -212,6 +227,10 @@ enum lkr_state lkr_produce(struct lkr_request *req, struct sockaddr *addrs[], si
 size_t lkr_finish(struct lkr_request *req, enum lkr_state state)
 {
 	(void) kr_resolve_finish(&req->req, state);
+
+	/* Make sure there's no open cache transaction as they can't span threads */
+	kr_cache_sync(&req->req.ctx->cache);
+
 	return req->req.answer->size;
 }
 
