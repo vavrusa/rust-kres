@@ -54,9 +54,7 @@ int lkr_module_unload(struct lkr_context *ctx, const char *name)
 
 int lkr_root_hint(struct lkr_context *ctx, const uint8_t *data, size_t len)
 {
-	knot_rdata_t rdata[RDATA_ARR_MAX];
-	knot_rdata_init(rdata, len, data);
-	kr_zonecut_add(&ctx->resolver.root_hints, (const knot_dname_t *)"", rdata);
+	kr_zonecut_add(&ctx->resolver.root_hints, (const knot_dname_t *)"", data, len);
 	return 0;
 }
 
@@ -175,6 +173,25 @@ enum lkr_state lkr_consume(struct lkr_request *req, const struct sockaddr *addr,
 	struct kr_query *query = kr_rplan_last(&req->req.rplan);
 	if (query) {
 		query->id = knot_wire_get_id(packet->wire);
+	} else {
+		/* The initial query message must be copied as it's accessed throughout the request lifetime. */
+		size_t first_query_size = packet->size;
+		if (knot_pkt_has_tsig(packet)) {
+			first_query_size += packet->tsig_wire.len;
+		}
+
+		knot_pkt_t *first_query = knot_pkt_new(NULL, first_query_size, &req->req.pool);
+		if (!first_query) {
+			return FAIL;
+		}
+
+		int ret = knot_pkt_copy(first_query, packet);
+		if (ret != KNOT_EOK && ret != KNOT_ETRAIL) {
+			return kr_error(ENOMEM);
+		}
+
+		req->req.qsource.packet = first_query;
+		req->req.qsource.size = first_query_size;
 	}
 
 	ret = kr_resolve_consume(&req->req, addr, packet);

@@ -7,7 +7,7 @@ use std::path::PathBuf;
 
 fn main() {
     pkg_config::Config::new()
-        .atleast_version("3.0.0")
+        .atleast_version("3.2.0")
         .probe("libkres")
         .unwrap();
 

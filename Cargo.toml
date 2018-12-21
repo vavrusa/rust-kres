@@ -1,6 +1,6 @@
 [package]
 name = "kres"
-version = "0.1.1"
+version = "0.1.2"
 authors = ["Marek Vavrusa <mvavrusa@cloudflare.com>"]
 links = "kres"
 build = "build.rs"
