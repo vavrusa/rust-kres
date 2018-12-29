@@ -1,5 +1,6 @@
 #include <stdlib.h>
 #include <stdbool.h>
+#include <stdint.h>
 
 /* Reexported layer state from libkres */
 enum lkr_state {
