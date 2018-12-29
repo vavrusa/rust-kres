@@ -16,16 +16,10 @@ fn main() {
         .probe("libknot")
         .unwrap();
 
-    let lua_includes = pkg_config::Config::new()
-        .probe("lua")
-        .unwrap()
-        .include_paths;
-
     cc::Build::new()
         .file("resolve.c")
         .include("src/knot-resolver")
         .include("src/knot-resolver/contrib")
-        .include(lua_includes[0].to_str().unwrap())
         .compile("resolve");
 
     let bindings = bindgen::Builder::default()
