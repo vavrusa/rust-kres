@@ -8,7 +8,7 @@
 #include "lib/resolve.h"
 #include "lib/dnssec/ta.h"
 #include "lib/cache/cdb_lmdb.h"
-#include "contrib/ucw/mempool.c"
+#include "contrib/ucw/mempool.h"
 #pragma GCC diagnostic pop
 #include "resolve.h"
 
