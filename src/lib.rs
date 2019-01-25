@@ -64,7 +64,7 @@ use std::ptr;
 use std::sync::Arc;
 
 /// Number of tries to produce a next message
-const MAX_PRODUCE_TRIES : usize = 3;
+const MAX_PRODUCE_TRIES : usize = 10;
 
 // Wrapped C library
 mod c {
