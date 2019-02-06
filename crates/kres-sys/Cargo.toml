@@ -1,0 +1,31 @@
+[package]
+name = "kres-sys"
+version = "0.1.4"
+authors = ["Marek Vavrusa <mvavrusa@cloudflare.com>"]
+links = "kres"
+build = "build.rs"
+license = "MIT/Apache-2.0"
+repository = "https://github.com/vavrusa/rust-kres"
+documentation = "https://docs.rs/kres"
+description = """
+Bindings to the Knot Resolver library (also known as libkres)
+"""
+categories = ["external-ffi-bindings"]
+edition = "2018"
+readme = "README.md"
+
+[dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+dnssector = { git = "https://github.com/jedisct1/dnssector", rev = "ef7625bbc0f97518eadc5878e5ed476fa54c19ae" }
+
+[build-dependencies]
+bindgen = "0.43"
+pkg-config = "0.3"
+cc = "1.0"
+fs_extra = "^1.1"
+
+[features]
+static = []
+default = []

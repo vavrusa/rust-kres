@@ -62,18 +62,13 @@ use std::mem;
 use std::net::{IpAddr, SocketAddr};
 use std::ptr;
 use std::sync::Arc;
+use kres_sys;
 
 /// Number of tries to produce a next message
 const MAX_PRODUCE_TRIES : usize = 10;
 
-// Wrapped C library
-mod c {
-    #![allow(non_snake_case, non_camel_case_types, non_upper_case_globals)]
-    include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
-}
-
 /// Request state enumeration
-pub use self::c::lkr_state as State;
+pub use kres_sys::lkr_state as State;
 
 /// Shared context for the request resolution.
 /// All requests create with a given context use its facilities:
@@ -83,7 +78,7 @@ pub use self::c::lkr_state as State;
 /// * Default EDNS options
 /// * Default options
 pub struct Context {
-    inner: Mutex<*mut c::lkr_context>,
+    inner: Mutex<*mut kres_sys::lkr_context>,
 }
 
 /* Context itself is not thread-safe, but Mutex wrapping it is */
@@ -95,7 +90,7 @@ impl Context {
     pub fn new() -> Arc<Self> {
         unsafe {
             Arc::new(Self {
-                inner: Mutex::new(c::lkr_context_new()),
+                inner: Mutex::new(kres_sys::lkr_context_new()),
             })
         }
     }
@@ -103,12 +98,12 @@ impl Context {
     /// Create an empty context with local disk cache
     pub fn with_cache(path: &str, max_bytes: usize) -> Result<Arc<Self>> {
         unsafe {
-            let inner = c::lkr_context_new();
+            let inner = kres_sys::lkr_context_new();
             let path_c = CString::new(path).unwrap();
             let cache_c = CStr::from_bytes_with_nul(b"cache\0").unwrap();
-            match c::lkr_cache_open(inner, path_c.as_ptr(), max_bytes) {
+            match kres_sys::lkr_cache_open(inner, path_c.as_ptr(), max_bytes) {
                 0 => {
-                    c::lkr_module_load(inner, cache_c.as_ptr());
+                    kres_sys::lkr_module_load(inner, cache_c.as_ptr());
                     Ok(Arc::new(Self {
                         inner: Mutex::new(inner),
                     }))
@@ -123,7 +118,7 @@ impl Context {
         let inner = self.locked();
         let name_c = CString::new(name)?;
         unsafe {
-            let res = c::lkr_module_load(*inner, name_c.as_ptr());
+            let res = kres_sys::lkr_module_load(*inner, name_c.as_ptr());
             if res != 0 {
                 return Err(Error::new(ErrorKind::NotFound, "failed to load module"));
             }
@@ -136,7 +131,7 @@ impl Context {
         let inner = self.locked();
         let name_c = CString::new(name)?;
         unsafe {
-            let res = c::lkr_module_unload(*inner, name_c.as_ptr());
+            let res = kres_sys::lkr_module_unload(*inner, name_c.as_ptr());
             if res != 0 {
                 return Err(Error::new(ErrorKind::NotFound, "failed to unload module"));
             }
@@ -152,7 +147,7 @@ impl Context {
             IpAddr::V6(ip) => ip.octets().to_vec(),
         };
         unsafe {
-            let res = c::lkr_root_hint(*inner, slice.as_ptr(), slice.len());
+            let res = kres_sys::lkr_root_hint(*inner, slice.as_ptr(), slice.len());
             if res != 0 {
                 return Err(Error::new(
                     ErrorKind::InvalidInput,
@@ -167,7 +162,7 @@ impl Context {
     pub fn add_trust_anchor(&self, rdata: &[u8]) -> Result<()> {
         let inner = self.locked();
         unsafe {
-            let res = c::lkr_trust_anchor(*inner, rdata.as_ptr(), rdata.len());
+            let res = kres_sys::lkr_trust_anchor(*inner, rdata.as_ptr(), rdata.len());
             if res != 0 {
                 return Err(Error::new(
                     ErrorKind::InvalidInput,
@@ -182,11 +177,11 @@ impl Context {
     pub fn set_verbose(&self, val: bool) {
         let inner = self.locked();
         unsafe {
-            c::lkr_verbose(*inner, val);
+            kres_sys::lkr_verbose(*inner, val);
         }
     }
 
-    fn locked(&self) -> MutexGuard<*mut c::lkr_context> {
+    fn locked(&self) -> MutexGuard<*mut kres_sys::lkr_context> {
         self.inner.lock()
     }
 }
@@ -196,7 +191,7 @@ impl Drop for Context {
         let inner = self.locked();
         if !inner.is_null() {
             unsafe {
-                c::lkr_context_free(*inner);
+                kres_sys::lkr_context_free(*inner);
             }
         }
     }
@@ -206,7 +201,7 @@ impl Drop for Context {
 /// The request is not automatically executed, it must be driven the caller to completion.
 pub struct Request {
     context: Arc<Context>,
-    inner: Mutex<*mut c::lkr_request>,
+    inner: Mutex<*mut kres_sys::lkr_request>,
 }
 
 /* Neither request nor context are thread safe.
@@ -218,7 +213,7 @@ unsafe impl Sync for Request {}
 impl Request {
     /// Create a new request under the context. The request is bound to the context for its lifetime.
     pub fn new(context: Arc<Context>) -> Self {
-        let inner = unsafe { c::lkr_request_new(*context.locked()) };
+        let inner = unsafe { kres_sys::lkr_request_new(*context.locked()) };
         Self {
             context,
             inner: Mutex::new(inner),
@@ -230,14 +225,14 @@ impl Request {
         let (_context, inner) = self.locked();
         let from = socket2::SockAddr::from(from);
         let msg_ptr = if !msg.is_empty() { msg.as_ptr() } else { ptr::null() };
-        unsafe { c::lkr_consume(*inner, from.as_ptr() as *const _, msg_ptr, msg.len()) }
+        unsafe { kres_sys::lkr_consume(*inner, from.as_ptr() as *const _, msg_ptr, msg.len()) }
     }
 
     /// Generate an outbound query for the request. This should be called when `consume()` returns a `Produce` state.
     pub fn produce(&self) -> Option<(Bytes, Vec<SocketAddr>)> {
         let mut msg = vec![0; 512];
         let mut addresses = Vec::new();
-        let mut sa_vec: Vec<*mut c::sockaddr> = vec![ptr::null_mut(); 4];
+        let mut sa_vec: Vec<*mut kres_sys::sockaddr> = vec![ptr::null_mut(); 4];
         let (_context, inner) = self.locked();
 
         let state = {
@@ -263,7 +258,7 @@ impl Request {
                     mem::forget(msg);
                     mem::forget(sa_vec);
 
-                    state = c::lkr_produce(
+                    state = kres_sys::lkr_produce(
                         *inner,
                         addr_ptr,
                         addr_capacity,
@@ -290,7 +285,7 @@ impl Request {
                     let addr = unsafe {
                         socket2::SockAddr::from_raw_parts(
                             ptr_addr as *const _,
-                            c::lkr_sockaddr_len(ptr_addr) as u32,
+                            kres_sys::lkr_sockaddr_len(ptr_addr) as u32,
                         )
                     };
                     if let Some(as_inet) = addr.as_inet() {
@@ -309,7 +304,7 @@ impl Request {
     /// Finish request processing and convert Request into the final answer.
     pub fn finish(self, state: State) -> Result<Bytes> {
         let (_context, inner) = self.locked();
-        let answer_len = unsafe { c::lkr_finish(*inner, state) };
+        let answer_len = unsafe { kres_sys::lkr_finish(*inner, state) };
         if answer_len == 0 {
             return Err(ErrorKind::UnexpectedEof.into())
         }
@@ -318,7 +313,7 @@ impl Request {
         let p = v.as_mut_ptr();
         let v = unsafe {
             mem::forget(v);
-            c::lkr_write_answer(*inner, p, answer_len);
+            kres_sys::lkr_write_answer(*inner, p, answer_len);
             Vec::from_raw_parts(p, answer_len, answer_len)
         };
 
@@ -328,8 +323,8 @@ impl Request {
     fn locked(
         &self,
     ) -> (
-        MutexGuard<*mut c::lkr_context>,
-        MutexGuard<*mut c::lkr_request>,
+        MutexGuard<*mut kres_sys::lkr_context>,
+        MutexGuard<*mut kres_sys::lkr_request>,
     ) {
         (self.context.locked(), self.inner.lock())
     }
@@ -340,7 +335,7 @@ impl Drop for Request {
         let (_context, mut inner) = self.locked();
         if !inner.is_null() {
             unsafe {
-                c::lkr_request_free(*inner);
+                kres_sys::lkr_request_free(*inner);
                 *inner = ptr::null_mut();
             }
         }
