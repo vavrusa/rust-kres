@@ -1,0 +1,22 @@
+language: rust
+dist: xenial
+rust:
+  - stable
+  - beta
+  - nightly
+matrix:
+  allow_failures:
+    - rust: nightly
+  fast_finish: true
+before_install:
+  - sudo apt-get install -y libgnutls28-dev
+  - git clone -b v2.7.2 https://github.com/cz-nic/knot.git
+  - cd knot
+  - autoreconf -fi
+  - ./configure --disable-static --disable-fastparser --disable-documentation --disable-daemon --disable-utilities --with-lmdb=no
+  - sudo make -j2 install
+  - sudo ldconfig
+notifications:
+  email:
+    on_success: never
+    on_failure: never

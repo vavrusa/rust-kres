@@ -14,6 +14,10 @@
 //! [Request](struct.Request.html) are used to safely access the fields of `struct kr_request`.
 //! Methods that wrap FFI calls lock request and its context for thread-safe access.
 //!
+//! * `struct kr_cache` is reimplemented with minimal API to allow for infrastructure cache.
+//! You can pass your own implementation using the `with_cache` on [Context](struct.Context.html) method,
+//! or use the [DefaultCache](struct.DefaultCache.html).
+//!
 //! Example:
 //!
 //! ```
@@ -55,17 +59,23 @@ use jemallocator;
 static ALLOC: jemallocator::Jemalloc = jemallocator::Jemalloc;
 
 use bytes::Bytes;
+use kres_sys;
 use parking_lot::{Mutex, MutexGuard};
-use std::ffi::{CStr, CString};
+use std::ffi::CString;
 use std::io::{Error, ErrorKind, Result};
 use std::mem;
 use std::net::{IpAddr, SocketAddr};
+use std::os::raw::c_void;
 use std::ptr;
 use std::sync::Arc;
-use kres_sys;
+
+#[cfg(feature = "cache")]
+mod cache;
+#[cfg(feature = "cache")]
+use cache::*;
 
 /// Number of tries to produce a next message
-const MAX_PRODUCE_TRIES : usize = 10;
+const MAX_PRODUCE_TRIES: usize = 10;
 
 /// Request state enumeration
 pub use kres_sys::lkr_state as State;
@@ -79,6 +89,7 @@ pub use kres_sys::lkr_state as State;
 /// * Default options
 pub struct Context {
     inner: Mutex<*mut kres_sys::lkr_context>,
+    cache: Option<*mut kres_sys::CacheState>,
 }
 
 /* Context itself is not thread-safe, but Mutex wrapping it is */
@@ -88,26 +99,30 @@ unsafe impl Sync for Context {}
 impl Context {
     /// Create an empty context without internal cache
     pub fn new() -> Arc<Self> {
-        unsafe {
-            Arc::new(Self {
-                inner: Mutex::new(kres_sys::lkr_context_new()),
-            })
-        }
+        let inner = unsafe { kres_sys::lkr_context_new() };
+        Arc::new(Self {
+            inner: Mutex::new(inner),
+            cache: None,
+        })
     }
 
-    /// Create an empty context with local disk cache
-    pub fn with_cache(path: &str, max_bytes: usize) -> Result<Arc<Self>> {
+    /// Create an empty context with the default cache implementation.
+    #[cfg(feature = "cache")]
+    pub fn with_default_cache(capacity: usize) -> Result<Arc<Self>> {
+        Self::with_cache(Box::new(DefaultCache::new(capacity)?))
+    }
+
+    /// Create an empty context with cache.
+    pub fn with_cache(cache: Box<kres_sys::Cache>) -> Result<Arc<Self>> {
         unsafe {
             let inner = kres_sys::lkr_context_new();
-            let path_c = CString::new(path).unwrap();
-            let cache_c = CStr::from_bytes_with_nul(b"cache\0").unwrap();
-            match kres_sys::lkr_cache_open(inner, path_c.as_ptr(), max_bytes) {
-                0 => {
-                    kres_sys::lkr_module_load(inner, cache_c.as_ptr());
-                    Ok(Arc::new(Self {
-                        inner: Mutex::new(inner),
-                    }))
-                }
+            // The box pointer itself must be boxed it's a fat pointer
+            let cache = Box::into_raw(Box::new(kres_sys::CacheState::new(cache)));
+            match kres_sys::lkr_cache_open(inner, cache as *mut _ as *mut c_void) {
+                0 => Ok(Arc::new(Self {
+                    inner: Mutex::new(inner),
+                    cache: Some(cache),
+                })),
                 _ => Err(Error::new(ErrorKind::Other, "failed to open cache")),
             }
         }
@@ -188,6 +203,11 @@ impl Context {
 
 impl Drop for Context {
     fn drop(&mut self) {
+        // Drop the cache state
+        if let Some(cache_ptr) = self.cache.take() {
+            let _ = unsafe { Box::from_raw(cache_ptr) };
+        }
+        // Free context
         let inner = self.locked();
         if !inner.is_null() {
             unsafe {
@@ -224,8 +244,21 @@ impl Request {
     pub fn consume(&self, msg: &[u8], from: SocketAddr) -> State {
         let (_context, inner) = self.locked();
         let from = socket2::SockAddr::from(from);
-        let msg_ptr = if !msg.is_empty() { msg.as_ptr() } else { ptr::null() };
-        unsafe { kres_sys::lkr_consume(*inner, from.as_ptr() as *const _, msg_ptr, msg.len()) }
+        let msg_ptr = if !msg.is_empty() {
+            msg.as_ptr()
+        } else {
+            ptr::null()
+        };
+        let res =
+            unsafe { kres_sys::lkr_consume(*inner, from.as_ptr() as *const _, msg_ptr, msg.len()) };
+
+        // If cache is open, walk accepted records and insert them into cache
+        if let Some(cache_ptr) = self.context.cache {
+            let cache = unsafe { &mut *cache_ptr };
+            Self::update_infra_cache(*inner, cache);
+        }
+
+        res
     }
 
     /// Generate an outbound query for the request. This should be called when `consume()` returns a `Produce` state.
@@ -306,7 +339,7 @@ impl Request {
         let (_context, inner) = self.locked();
         let answer_len = unsafe { kres_sys::lkr_finish(*inner, state) };
         if answer_len == 0 {
-            return Err(ErrorKind::UnexpectedEof.into())
+            return Err(ErrorKind::UnexpectedEof.into());
         }
 
         let mut v: Vec<u8> = Vec::with_capacity(answer_len);
@@ -318,6 +351,55 @@ impl Request {
         };
 
         Ok(Bytes::from(v))
+    }
+
+    /// Return current zone cut name (if exists).
+    pub fn current_zone_cut(&self) -> Option<&[u8]> {
+        let (_context, inner) = self.locked();
+        unsafe {
+            let dname_ptr = kres_sys::lkr_current_zone_cut(*inner);
+            if dname_ptr.is_null() {
+                return None;
+            }
+            let dname = kres_sys::kr_dname_to_slice(dname_ptr);
+            Some(dname)
+        }
+    }
+
+    // Update infrastructure cache from the list of processed records
+    fn update_infra_cache(inner: *mut kres_sys::lkr_request, cache: &mut kres_sys::CacheState) {
+        // Select a list of cacheable records
+        let mut entries: Vec<*const kres_sys::ranked_rr_array_entry_t> = vec![ptr::null(); 8];
+        let entries = unsafe {
+            let count = kres_sys::lkr_accepted_records(inner, entries.as_mut_ptr(), entries.len());
+            &entries[..count]
+        };
+
+        // Unwrap ranked records and insert into cache
+        for entry in entries {
+            let entry = unsafe { &**entry };
+            let rr = unsafe { &*entry.rr };
+            let name = unsafe { kres_sys::kr_dname_to_slice(rr.owner) };
+            let rdata = {
+                let mut v = Vec::with_capacity(rr.rrs.count as usize);
+                let mut ptr = rr.rrs.rdata;
+                for _ in 0..rr.rrs.count {
+                    let rdata = unsafe {
+                        let rd = &*ptr;
+                        std::slice::from_raw_parts(rd.data.as_ptr(), rd.len as usize)
+                    };
+                    v.push(rdata.to_vec());
+                    ptr = unsafe { kres_sys::lkr_rdata_next(ptr) };
+                }
+                v
+            };
+
+            cache.as_cache_mut().insert(
+                name,
+                rr.type_,
+                kres_sys::CacheEntry::new(rr.ttl, entry.rank, rdata),
+            );
+        }
     }
 
     fn locked(
@@ -350,6 +432,16 @@ mod tests {
     use dnssector::{DNSSector, Section};
     use std::net::SocketAddr;
 
+    pub struct TestCache {}
+
+    impl kres_sys::Cache for TestCache {
+        fn get(&mut self, _name: &[u8], _rr_type: u16) -> Option<kres_sys::CacheEntry> {
+            None
+        }
+
+        fn insert(&mut self, _name: &[u8], _rr_type: u16, _entry: kres_sys::CacheEntry) {}
+    }
+
     #[test]
     fn context_create() {
         let context = Context::new();
@@ -361,8 +453,9 @@ mod tests {
     }
 
     #[test]
-    fn context_create_cached() {
-        assert!(Context::with_cache(".", 64 * 1024).is_ok());
+    #[cfg(feature = "cache")]
+    fn context_create_default_cache() {
+        assert!(Context::with_default_cache(100).is_ok());
     }
 
     #[test]
@@ -398,7 +491,7 @@ mod tests {
 
     #[test]
     fn request_processing() {
-        let context = Context::new();
+        let context = Context::with_cache(Box::new(TestCache {})).expect("cache");
 
         // Create a ". NS" query (priming)
         let request = Request::new(context.clone());
@@ -430,11 +523,17 @@ mod tests {
                 )
                 .unwrap();
 
+                // Check current zone cut
+                assert!(request.current_zone_cut().is_some());
+
                 // Consume the mock answer and expect resolution to be done
                 request.consume(resp.packet(), addresses[0])
             }
             None => State::DONE,
         };
+
+        // Check current zone cut
+        assert!(request.current_zone_cut().is_none());
 
         // Get final answer
         assert_eq!(state, State::DONE);

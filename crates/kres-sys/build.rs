@@ -18,7 +18,18 @@ fn main() {
 
     let bindings = bindgen::Builder::default()
         .header("resolve.h")
+        .clang_args(["-I", "src/knot-resolver"].iter())
+        .header("src/knot-resolver/lib/cache/api.h")
+        .opaque_type("knot_mm_t")
+        .opaque_type("kr_cdb_api")
+        .whitelist_type("knot_rdata_t")
+        .whitelist_type("knot_rdataset_t")
+        .whitelist_type("knot_mm_t")
+        .whitelist_type("kr_cache")
+        .whitelist_type("kr_cache_p")
+        .whitelist_type("ranked_rr_array_entry_t")
         .whitelist_function("lkr_.*")
+        .whitelist_function("knot_rdataset_add")
         .rustified_enum("lkr_state")
         .raw_line("#[allow(bad_style)]")
         .generate()
@@ -58,6 +69,7 @@ fn main() {
             .current_dir(&libkres_src_dir)
             .arg("lib")
             .arg("BUILDMODE=static")
+            .arg("LIBRARY_ONLY=yes")
             .status()
             .expect("failed to build libkres");
 
