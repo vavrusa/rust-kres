@@ -243,14 +243,18 @@ impl Request {
     /// Consume an input from the caller, this is typically either a client query or response to an outbound query.
     pub fn consume(&self, msg: &[u8], from: SocketAddr) -> State {
         let (_context, inner) = self.locked();
-        let from = socket2::SockAddr::from(from);
+        let from_raw = socket2::SockAddr::from(from);
+        let from_ptr = match from.ip().is_unspecified() {
+            true => std::ptr::null(),
+            false => from_raw.as_ptr(),
+        };
         let msg_ptr = if !msg.is_empty() {
             msg.as_ptr()
         } else {
             ptr::null()
         };
         let res =
-            unsafe { kres_sys::lkr_consume(*inner, from.as_ptr() as *const _, msg_ptr, msg.len()) };
+            unsafe { kres_sys::lkr_consume(*inner, from_ptr as *const _, msg_ptr, msg.len()) };
 
         // If cache is open, walk accepted records and insert them into cache
         if let Some(cache_ptr) = self.context.cache {
