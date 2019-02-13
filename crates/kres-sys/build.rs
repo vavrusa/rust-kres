@@ -65,11 +65,25 @@ fn main() {
             libkres_src_dir.display()
         );
 
+        let compiler = cc::Build::new().get_compiler();
+        let mut cflags = compiler
+            .args()
+            .iter()
+            .map(|s| s.to_str().unwrap())
+            .collect::<Vec<_>>();
+
+        // Disable IPv6 unfairness
+        cflags.push("-DFAVOUR_IPV6=0");
+
+        // Build
         Command::new("make")
             .current_dir(&libkres_src_dir)
             .arg("lib")
+            .arg("V=1")
             .arg("BUILDMODE=static")
             .arg("LIBRARY_ONLY=yes")
+            .env("CC", compiler.path())
+            .env("CFLAGS", cflags.join(" "))
             .status()
             .expect("failed to build libkres");
 

@@ -107,7 +107,6 @@ struct lkr_context *lkr_context_new()
 	lkr_root_hint(ctx, (const uint8_t *) "\xc0\xcb\xe6\x0a", 4);
 	/* Default options */
 	resolver->options.NO_0X20 = true;
-	resolver->options.NO_IPV6 = true;
 	return ctx;
 }
 
@@ -286,7 +285,8 @@ static size_t select_infra_records(ranked_rr_array_t *arr, const ranked_rr_array
 			continue;
 
 		// Only accept infrastructure records
-		if (!is_infra_type(entry->rr->type) || entry->to_wire) {
+		const uint16_t rr_type = entry->rr->type;
+		if (!is_infra_type(rr_type) || (entry->to_wire && rr_type != KNOT_RRTYPE_NS)) {
 			continue;
 		}
 
