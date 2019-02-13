@@ -7,7 +7,6 @@
 #pragma GCC diagnostic ignored "-Wsign-compare"
 #include "lib/resolve.h"
 #include "lib/dnssec/ta.h"
-#include "lib/cache/cdb_lmdb.h"
 #include "contrib/ucw/mempool.h"
 #pragma GCC diagnostic pop
 #include "resolve.h"
@@ -108,14 +107,13 @@ struct lkr_context *lkr_context_new()
 	lkr_root_hint(ctx, (const uint8_t *) "\xc0\xcb\xe6\x0a", 4);
 	/* Default options */
 	resolver->options.NO_0X20 = true;
-	resolver->options.NO_IPV6 = true;
 	return ctx;
 }
 
-int lkr_cache_open(struct lkr_context *ctx, const char *path, size_t max_bytes)
+int lkr_cache_open(struct lkr_context *ctx, void *cache_ptr)
 {
-	struct kr_cdb_opts opts = { path, max_bytes };
-	return kr_cache_open(&ctx->resolver.cache, kr_cdb_lmdb(), &opts, &ctx->pool);
+	ctx->resolver.cache.db = (knot_db_t *)cache_ptr;
+	return 0;
 }
 
 void lkr_context_free(struct lkr_context *ctx)
@@ -149,9 +147,6 @@ struct lkr_request *lkr_request_new(struct lkr_context *ctx)
 	}
 
 	int ret = kr_resolve_begin(&req->req, &ctx->resolver, req->req.answer);
-
-	/* Make sure there's no open cache transaction as they can't span threads */
-	kr_cache_sync(&req->req.ctx->cache);
 
 	if (ret == KR_STATE_FAIL) {
 		lkr_request_free(req);
@@ -194,12 +189,7 @@ enum lkr_state lkr_consume(struct lkr_request *req, const struct sockaddr *addr,
 		req->req.qsource.size = first_query_size;
 	}
 
-	ret = kr_resolve_consume(&req->req, addr, packet);
-
-	/* Make sure there's no open cache transaction as they can't span threads */
-	kr_cache_sync(&req->req.ctx->cache);
-
-	return (enum lkr_state) ret;
+	return (enum lkr_state) kr_resolve_consume(&req->req, addr, packet);
 }
 
 enum lkr_state lkr_produce(struct lkr_request *req, struct sockaddr *addrs[], size_t addrs_len, uint8_t *data, size_t *len, _Bool is_stream)
@@ -211,17 +201,12 @@ enum lkr_state lkr_produce(struct lkr_request *req, struct sockaddr *addrs[], si
 
 	/* Convert linear array into the array of struct sockaddr pointers */
 	if (!addr_list) {
-		/* Make sure there's no open cache transaction as they can't span threads */
-		kr_cache_sync(&req->req.ctx->cache);
 		*len = packet->size;
 		return (enum lkr_state) res;
 	}
 
 	/* TODO: This will need to happen before each send when the destination address is known */
 	int ret = kr_resolve_checkout(&req->req, NULL, addr_list, sock_type, packet);
-
-	/* Make sure there's no open cache transaction as they can't span threads */
-	kr_cache_sync(&req->req.ctx->cache);
 
 	if (ret != 0) {
 		*len = packet->size;
@@ -245,9 +230,6 @@ size_t lkr_finish(struct lkr_request *req, enum lkr_state state)
 {
 	(void) kr_resolve_finish(&req->req, state);
 
-	/* Make sure there's no open cache transaction as they can't span threads */
-	kr_cache_sync(&req->req.ctx->cache);
-
 	return req->req.answer->size;
 }
 
@@ -262,7 +244,89 @@ size_t lkr_write_answer(struct lkr_request *req, uint8_t *dst, size_t max_bytes)
 	return answer->size;
 }
 
+const uint8_t *lkr_current_zone_cut(struct lkr_request *req)
+{
+	if (kr_rplan_empty(&req->req.rplan)) {
+		return NULL;
+	}
+
+	struct kr_query *current = array_tail(req->req.rplan.pending);
+	if (current == NULL) {
+		return NULL;
+	}
+
+	return (const uint8_t *)current->zone_cut.name;
+}
+
+/// Returns true if the type is an infrastructure type.
+static bool is_infra_type(uint16_t rr_type) {
+	switch (rr_type) {
+	case KNOT_RRTYPE_NS:
+	case KNOT_RRTYPE_DS:
+	case KNOT_RRTYPE_DNSKEY:
+	case KNOT_RRTYPE_A:
+	case KNOT_RRTYPE_AAAA:
+		return true;
+	default:
+		return false;
+	}
+}
+
+// Select infrastructure records accepted from an upstream response
+static size_t select_infra_records(ranked_rr_array_t *arr, const ranked_rr_array_entry_t *dst[], size_t off, size_t max_count)
+{
+	for (size_t i = 0; i < arr->len; ++i) {
+		ranked_rr_array_entry_t *entry = arr->at[i];
+
+		if (off >= max_count)
+			break;
+
+		if (entry->cached)
+			continue;
+
+		// Only accept infrastructure records
+		const uint16_t rr_type = entry->rr->type;
+		if (!is_infra_type(rr_type) || (entry->to_wire && rr_type != KNOT_RRTYPE_NS)) {
+			continue;
+		}
+
+		// Accept any that's valid
+		if (kr_rank_test(entry->rank, KR_RANK_INITIAL)
+			|| kr_rank_test(entry->rank, KR_RANK_BOGUS)
+			|| kr_rank_test(entry->rank, KR_RANK_MISMATCH)
+			|| kr_rank_test(entry->rank, KR_RANK_MISSING)) {
+			continue;
+		}
+
+		entry->cached = true;
+		dst[off] = entry;
+		off += 1;
+	}
+
+	return off;
+}
+
+size_t lkr_accepted_records(struct lkr_request *req, const ranked_rr_array_entry_t *dst[], size_t max_count) {
+
+	size_t off = 0;
+	off = select_infra_records(&req->req.answ_selected, dst, off, max_count);
+	off = select_infra_records(&req->req.auth_selected, dst, off, max_count);
+	off = select_infra_records(&req->req.add_selected, dst, off, max_count);
+
+	return off;
+}
+
 int lkr_sockaddr_len(struct sockaddr *sa)
 {
 	return kr_sockaddr_len(sa);
+}
+
+int lkr_dname_len(const uint8_t *dname)
+{
+	return knot_dname_size((const knot_dname_t *)dname);
+}
+
+knot_rdata_t *lkr_rdata_next(knot_rdata_t *rdata)
+{
+	return knot_rdataset_next(rdata);
 }
