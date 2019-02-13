@@ -254,7 +254,7 @@ impl Request {
             ptr::null()
         };
         let res =
-            unsafe { kres_sys::lkr_consume(*inner, from_ptr as *const _, msg_ptr, msg.len()) };
+            unsafe { kres_sys::lkr_consume(*inner, from_ptr as *const _, msg_ptr, msg.len(), true) };
 
         // If cache is open, walk accepted records and insert them into cache
         if let Some(cache_ptr) = self.context.cache {

@@ -156,7 +156,7 @@ struct lkr_request *lkr_request_new(struct lkr_context *ctx)
 	return req;
 }
 
-enum lkr_state lkr_consume(struct lkr_request *req, const struct sockaddr *addr, const uint8_t *data, size_t len)
+enum lkr_state lkr_consume(struct lkr_request *req, const struct sockaddr *addr, const uint8_t *data, size_t len, bool tcp)
 {
 	knot_pkt_t *packet = knot_pkt_new((uint8_t *)data, len, &req->req.pool);
 	int ret = knot_pkt_parse(packet, 0);
@@ -168,6 +168,8 @@ enum lkr_state lkr_consume(struct lkr_request *req, const struct sockaddr *addr,
 	struct kr_query *query = kr_rplan_last(&req->req.rplan);
 	if (query) {
 		query->id = knot_wire_get_id(packet->wire);
+		query->flags.CACHED = (addr == NULL);
+		query->flags.TCP = tcp;
 	} else {
 		/* The initial query message must be copied as it's accessed throughout the request lifetime. */
 		size_t first_query_size = packet->size;

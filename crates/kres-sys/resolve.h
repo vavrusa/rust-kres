@@ -31,7 +31,7 @@ void lkr_verbose(struct lkr_context *ctx, bool val);
 
 struct lkr_request *lkr_request_new(struct lkr_context *ctx);
 void lkr_request_free(struct lkr_request *req);
-enum lkr_state lkr_consume(struct lkr_request *req, const struct sockaddr *addr, const uint8_t *data, size_t len);
+enum lkr_state lkr_consume(struct lkr_request *req, const struct sockaddr *addr, const uint8_t *data, size_t len, bool tcp);
 enum lkr_state lkr_produce(struct lkr_request *req, struct sockaddr *addrs[], size_t addrs_len, uint8_t *data, size_t *len, _Bool is_stream);
 size_t lkr_finish(struct lkr_request *req, enum lkr_state state);
 size_t lkr_write_answer(struct lkr_request *req, uint8_t *dst, size_t max_bytes);
