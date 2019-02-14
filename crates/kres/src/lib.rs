@@ -80,6 +80,9 @@ const MAX_PRODUCE_TRIES: usize = 10;
 /// Request state enumeration
 pub use kres_sys::lkr_state as State;
 
+/// Re-export cache interface.
+pub use kres_sys::{Cache, CacheEntry};
+
 /// Shared context for the request resolution.
 /// All requests create with a given context use its facilities:
 /// * Trust Anchor storage
@@ -113,7 +116,7 @@ impl Context {
     }
 
     /// Create an empty context with cache.
-    pub fn with_cache(cache: Box<kres_sys::Cache>) -> Result<Arc<Self>> {
+    pub fn with_cache(cache: Box<Cache>) -> Result<Arc<Self>> {
         unsafe {
             let inner = kres_sys::lkr_context_new();
             // The box pointer itself must be boxed it's a fat pointer
@@ -401,7 +404,7 @@ impl Request {
             cache.as_cache_mut().insert(
                 name,
                 rr.type_,
-                kres_sys::CacheEntry::new(rr.ttl, entry.rank, rdata),
+                CacheEntry::new(rr.ttl, entry.rank, rdata),
             );
         }
     }
@@ -438,12 +441,12 @@ mod tests {
 
     pub struct TestCache {}
 
-    impl kres_sys::Cache for TestCache {
-        fn get(&mut self, _name: &[u8], _rr_type: u16) -> Option<kres_sys::CacheEntry> {
+    impl Cache for TestCache {
+        fn get(&mut self, _name: &[u8], _rr_type: u16) -> Option<CacheEntry> {
             None
         }
 
-        fn insert(&mut self, _name: &[u8], _rr_type: u16, _entry: kres_sys::CacheEntry) {}
+        fn insert(&mut self, _name: &[u8], _rr_type: u16, _entry: CacheEntry) {}
     }
 
     #[test]
