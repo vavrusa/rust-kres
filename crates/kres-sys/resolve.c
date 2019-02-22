@@ -168,7 +168,6 @@ enum lkr_state lkr_consume(struct lkr_request *req, const struct sockaddr *addr,
 	struct kr_query *query = kr_rplan_last(&req->req.rplan);
 	if (query) {
 		query->id = knot_wire_get_id(packet->wire);
-		query->flags.CACHED = (addr == NULL);
 		query->flags.TCP = tcp;
 	} else {
 		/* The initial query message must be copied as it's accessed throughout the request lifetime. */
