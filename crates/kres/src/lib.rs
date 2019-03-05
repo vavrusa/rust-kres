@@ -321,7 +321,7 @@ impl Request {
             State::CONSUME => {
                 for ptr_addr in sa_vec {
                     if ptr_addr.is_null() {
-                        break;
+                        continue;
                     }
                     let addr = unsafe {
                         socket2::SockAddr::from_raw_parts(

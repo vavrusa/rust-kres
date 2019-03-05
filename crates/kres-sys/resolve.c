@@ -218,7 +218,7 @@ enum lkr_state lkr_produce(struct lkr_request *req, struct sockaddr *addrs[], si
 	for (uint16_t i = 0; i < MIN(addrs_len, KR_NSREP_MAXADDR); ++i) {
 		struct sockaddr *choice = (struct sockaddr *)(&addr_list_entries[i]);
 		if (choice->sa_family == AF_UNSPEC) {
-			break;
+			continue;
 		}
 		addrs[i] = choice;
 	}
