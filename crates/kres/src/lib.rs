@@ -33,7 +33,7 @@
 //! let mut state = req.consume(&question, from_addr);
 //! while state == State::PRODUCE {
 //!     state = match req.produce() {
-//!         Some((msg, addr_set)) => {
+//!         Ok(Some((msg, addr_set))) => {
 //!             // This can be any I/O model the application uses
 //!             let mut socket = UdpSocket::bind("0.0.0.0:0").unwrap();
 //!             socket.send_to(&msg, &addr_set[0]).unwrap();
@@ -42,9 +42,10 @@
 //!             // Pass the response back to the request
 //!             req.consume(&buf[..amt], src)
 //!         },
-//!         None => {
+//!         Ok(None) => {
 //!             break;
-//!         }
+//!         },
+//!         Err(e) => panic!("error: {}", e),
 //!     }
 //! }
 //!
@@ -269,7 +270,7 @@ impl Request {
     }
 
     /// Generate an outbound query for the request. This should be called when `consume()` returns a `Produce` state.
-    pub fn produce(&self) -> Option<(Bytes, Vec<SocketAddr>)> {
+    pub fn produce(&self) -> Result<Option<(Bytes, Vec<SocketAddr>)>> {
         let mut msg = vec![0; 512];
         let mut addresses = Vec::new();
         let mut sa_vec: Vec<*mut kres_sys::sockaddr> = vec![ptr::null_mut(); 4];
@@ -316,7 +317,7 @@ impl Request {
         };
 
         match state {
-            State::DONE => None,
+            State::DONE => Ok(None),
             State::CONSUME => {
                 for ptr_addr in sa_vec {
                     if ptr_addr.is_null() {
@@ -335,9 +336,9 @@ impl Request {
                     }
                 }
 
-                Some((Bytes::from(msg), addresses))
+                Ok(Some((Bytes::from(msg), addresses)))
             }
-            _ => None,
+            _ => Err(ErrorKind::Other.into()),
         }
     }
 
@@ -434,6 +435,7 @@ impl Drop for Request {
 #[cfg(test)]
 mod tests {
     use super::{Context, Request, State};
+    use kres_sys::{Cache, CacheEntry};
     use dnssector::constants::*;
     use dnssector::synth::gen;
     use dnssector::{DNSSector, Section};
@@ -515,7 +517,7 @@ mod tests {
 
         // Generate an outbound query
         let state = match request.produce() {
-            Some((buf, addresses)) => {
+            Ok(Some((buf, addresses))) => {
                 // Generate a mock answer to the outbound query
                 let mut resp = DNSSector::new(buf.to_vec()).unwrap().parse().unwrap();
                 resp.set_response(true);
@@ -536,7 +538,7 @@ mod tests {
                 // Consume the mock answer and expect resolution to be done
                 request.consume(resp.packet(), addresses[0])
             }
-            None => State::DONE,
+            _ => State::DONE,
         };
 
         // Check current zone cut
