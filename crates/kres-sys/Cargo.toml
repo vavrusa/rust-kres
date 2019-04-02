@@ -1,6 +1,6 @@
 [package]
 name = "kres-sys"
-version = "0.1.4"
+version = "0.1.5"
 authors = ["Marek Vavrusa <mvavrusa@cloudflare.com>"]
 links = "kres"
 build = "build.rs"

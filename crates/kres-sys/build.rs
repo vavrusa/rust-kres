@@ -11,6 +11,8 @@ use std::process::Command;
 
 fn main() {
     cc::Build::new()
+        .flag("-std=c99")
+        .define("_BSD_SOURCE", None)
         .file("resolve.c")
         .include("src/knot-resolver")
         .include("src/knot-resolver/contrib")
